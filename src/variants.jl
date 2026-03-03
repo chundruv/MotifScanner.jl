@@ -47,6 +47,8 @@ loadrefseqs(vartable, fastafile; mml=40, reffield=:ref, altfield=:alt) = loadref
 #     seqs
 # end
 
+loadrefseqs(chroms, starts, stops, refs::Vector{<:AbstractString}, alts::Vector{<:AbstractString}, file, mml=40) = loadrefseqs(chroms, starts, stops, LongDNA{4}.(refs), LongDNA{4}.(alts), file, mml)
+
 function loadrefseqs(chroms, starts, stops, refs, alts, file, mml=40)
     reader = open(FASTA.Reader, file, index=string(file, ".fai"))
     
@@ -103,7 +105,7 @@ function scanmots(refseq, altseq, refind, altind, motifs)
     df = DataFrame(MotifName=String[], MotifID=String[], RefMotSeqStart=Int[], AltMotSeqStart=Int[],
                                                                             RefMaxScore=Float64[], RefStart=Int[], RefStop=Int[], RefStrand=String[], RefSumScore=Float64[], RefTotalMotifs=Int[], RefTotalMax=Int[],
                                                                             AltMaxScore=Float64[], AltStart=Int[], AltStop=Int[], AltStrand=String[], AltSumScore=Float64[], AltTotalMotifs=Int[], AltTotalMax=Int[],
-                                                                            RefPrMax=Float64[], AltPrMax=Float64[], LR_RefAlt=Float64[], PR_RefAlt=Float64[], RefSeq=LongDNASeq[], AltSeq=LongDNASeq[])
+                                                                            RefPrMax=Float64[], AltPrMax=Float64[], LR_RefAlt=Float64[], PR_RefAlt=Float64[], RefSeq=LongDNA{4}[], AltSeq=LongDNA{4}[])
     @showprogress for m in motifs
         maxscore = sum(maximum(m.pbg, dims=1))
         refmseq, refstart = MotifScanner.motifscanseq(refseq, refind, m)

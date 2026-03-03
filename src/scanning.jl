@@ -5,6 +5,7 @@ rcm(M) = reverse(reverse(M, dims=1), dims=2)
 
 ### loop for forward and reverse motif scanning
 ## no doubt there are efficiency savings available here
+### eg don't allocate rot - just flip indicies!
 function scanmotif(seq, mot)
     n = length(seq)
     m = size(mot, 2)
@@ -83,7 +84,7 @@ end
 
 
 
-### motif scann stats
+### motif scan stats
 function scanmotstats(mot, seq::T, thr=5) where{T}
         
     fs, rs = scanmotif(seq, mot.pbg)

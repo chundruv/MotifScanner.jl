@@ -62,9 +62,9 @@ end
 
 function loadrefseqs(vartable, fastafile; mml=40, reffield=:ref, altfield=:alt)
     seqs = loadrefseqs(vartable.chrom, vartable.start, vartable.stop, vartable[!, reffield], vartable[!, altfield], fastafile, mml)
-    if :ID in names(vartable)
+    if :ID in propertynames(vartable)
         seqs[!, :ID] = string.(vartable[!, :ID])
-    elseif :id in names(vartable)
+    elseif :id in propertynames(vartable)
         seqs[!, :ID] = string.(vartable[!, :id])
     end
     seqs

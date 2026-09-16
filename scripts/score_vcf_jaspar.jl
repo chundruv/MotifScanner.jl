@@ -54,7 +54,7 @@ function parse_vcf_chunk!(io, chunk_size::Int, split_multiallelic::Bool, drop_sy
 end
 
 function write_scores!(io, df::DataFrame)
-    has_id = :ID in names(df)
+    has_id = :ID in propertynames(df)
     for row in eachrow(df)
         row_id = has_id ? row.ID : ""
         fields = [

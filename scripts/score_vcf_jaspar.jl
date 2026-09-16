@@ -133,9 +133,6 @@ function main(args)
             seqtable[!, :ID] = vartable.ID
 
             scores = motifscanall(seqtable, motifs; minprmax=minprmax, mindeltapr=mindeltapr)
-            if :ID ∉ names(scores) && nrow(scores) > 0
-                scores[!, :ID] = repeat(vartable.ID, inner=1)
-            end
             total_output_rows += nrow(scores)
 
             write_scores!(out, scores)

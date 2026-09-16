@@ -32,7 +32,9 @@ function loadmeme(file, w = 1e-2, background=background_human_zero_markov())
     pwm ./= sum(pwm, dims=1)
     
     pbg = log2.(pwm) .- log2.(background)
-    (name=motifname, id=motifid, pwm=pwm, pbg=pbg)
+    pbg_rc = rcm(pbg)
+    maxscore = sum(maximum(pbg, dims=1))
+    (name=motifname, id=motifid, pwm=pwm, pbg=pbg, pbg_rc=pbg_rc, maxscore=maxscore)
 end
 
 
@@ -86,8 +88,10 @@ function loadmemelibrary(file, w = 1e-2, background=background_human_zero_markov
 
     motifmeta = DataFrame(MotifName=motifnames, MotifID=motifids, Lengths=motiflengths, NumSites=nsites)
     pbgs = [log2.(pwm) .- log2.(background) for pwm in pwms]
+    pbg_rcs = rcm.(pbgs)
+    maxscores = [sum(maximum(pbg, dims=1)) for pbg in pbgs]
 
-    motifdata = [(name=motifname, id=id, pwm=pwm, pbg=pbg) for (motifname, id, pwm, pbg) in zip(motifnames, motifids, pwms, pbgs)]
+    motifdata = [(name=motifname, id=id, pwm=pwm, pbg=pbg, pbg_rc=pbg_rc, maxscore=maxscore) for (motifname, id, pwm, pbg, pbg_rc, maxscore) in zip(motifnames, motifids, pwms, pbgs, pbg_rcs, maxscores)]
 
     motifmeta, motifdata
 
@@ -118,7 +122,9 @@ function loadhomer(file, w = 1e-2, background=background_human_zero_markov())
     pwm ./= sum(pwm, dims=1)
     
     pbg = log2.(pwm) .- log2.(background)
-    (name=name, id=longname, pwm=pwm, pbg=pbg, sct=sct, consensus=consensus)
+    pbg_rc = rcm(pbg)
+    maxscore = sum(maximum(pbg, dims=1))
+    (name=name, id=longname, pwm=pwm, pbg=pbg, pbg_rc=pbg_rc, maxscore=maxscore, sct=sct, consensus=consensus)
 end
 
 
@@ -200,8 +206,10 @@ function loadtransfac(file, w = 1e-2, background=MotifScanner.background_human_z
     dropmissing!(motifmeta)
     
     pbgs = [log2.(pwm) .- log2.(background) for pwm in pwms]
+    pbg_rcs = rcm.(pbgs)
+    maxscores = [sum(maximum(pbg, dims=1)) for pbg in pbgs]
 
-    motifdata = [(name=motifname, id=id, pwm=pwm, pbg=pbg) for (motifname, id, pwm, pbg) in zip(motifmeta.MotifName, motifmeta.MotifID, pwms, pbgs)]
+    motifdata = [(name=motifname, id=id, pwm=pwm, pbg=pbg, pbg_rc=pbg_rc, maxscore=maxscore) for (motifname, id, pwm, pbg, pbg_rc, maxscore) in zip(motifmeta.MotifName, motifmeta.MotifID, pwms, pbgs, pbg_rcs, maxscores)]
     motifmeta.MotifFam = motiffamily.(motifmeta.MotifName);
     motifmeta, motifdata
 

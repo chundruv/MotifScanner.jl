@@ -2,18 +2,24 @@
 ## reverse complement
 rcm(M) = reverse(reverse(M, dims=1), dims=2)
 
+motifpbg_rc(motif) = hasproperty(motif, :pbg_rc) ? motif.pbg_rc : rcm(motif.pbg)
+motifmaxscore(motif) = hasproperty(motif, :maxscore) ? motif.maxscore : sum(maximum(motif.pbg, dims=1))
+
 
 ### loop for forward and reverse motif scanning
 ## no doubt there are efficiency savings available here
 ### eg don't allocate rot - just flip indicies!
 function scanmotif(seq, mot)
+    scanmotif(seq, mot, rcm(mot))
+end
+
+function scanmotif(seq, mot, rot)
     n = length(seq)
     m = size(mot, 2)
     fscores = zeros(Float64, n - m + 1)
     rscores = zeros(Float64, n - m + 1)
-    rot = rcm(mot)
     for i = 1:(n - m + 1)
-        for j = 1:m
+        @inbounds @simd for j = 1:m
             if seq[i + j - 1] == DNA_A
                 fscores[i] += mot[1, j]
                 rscores[i] += rot[1, j]
@@ -34,7 +40,7 @@ end
 
 ### scan max
 function scanmax(seq, motif)
-    fs, rs = scanmotif(seq, motif.pbg)
+    fs, rs = scanmotif(seq, motif.pbg, motifpbg_rc(motif))
     fm, fi = findmax(fs)
     rm, ri = findmax(rs)
     n = size(motif.pbg, 2)
@@ -55,31 +61,63 @@ end
 
 ### scan sum max
 function scansummax(seq, motif, thr=0)
-    fs, rs = scanmotif(seq, motif.pbg)
-    maxscore = sum(maximum(motif.pbg, dims=1))
+    fs, rs = scanmotif(seq, motif.pbg, motifpbg_rc(motif))
+    maxscore = motifmaxscore(motif)
+    thrscore = thr * maxscore
 
-    fsi = findall(fs .> thr*maxscore)
-    rsi = findall(rs .> thr*maxscore)
+    totalmotifs = 0
+    totalmax = 0
+    sumscore_num = 0.0
 
-    sumscore    = (sum(fs[fsi]) + sum(rs[rsi]))/maxscore
-    totalmotifs = length(fsi) + length(rsi)
-    totalmax = sum(fs .== maxscore) .+ sum(rs .== maxscore)
-    
-    fm, fi = findmax(fs)
-    rm, ri = findmax(rs)
+    fm = -Inf
+    fi = 1
+    rm = -Inf
+    ri = 1
+    @inbounds for i in eachindex(fs, rs)
+        f = fs[i]
+        r = rs[i]
+
+        if f > thrscore
+            sumscore_num += f
+            totalmotifs += 1
+        end
+        if r > thrscore
+            sumscore_num += r
+            totalmotifs += 1
+        end
+
+        if f == maxscore
+            totalmax += 1
+        end
+        if r == maxscore
+            totalmax += 1
+        end
+
+        if f > fm
+            fm = f
+            fi = i
+        end
+        if r > rm
+            rm = r
+            ri = i
+        end
+    end
+
+    sumscore = sumscore_num / maxscore
+
     n = size(motif.pbg, 2)
     if fm > rm
-        maxscore = fm
+        maxval = fm
         start = fi
         stop = fi + n - 1
         strand = "+"
     else
-        maxscore = rm
+        maxval = rm
         start = ri
         stop  = ri + n - 1
         strand = "-"
     end
-    maxscore, start, stop, strand, sumscore, totalmotifs, totalmax
+    maxval, start, stop, strand, sumscore, totalmotifs, totalmax
 end
 
 
@@ -87,25 +125,26 @@ end
 ### motif scan stats
 function scanmotstats(mot, seq::T, thr=5) where{T}
         
-    fs, rs = scanmotif(seq, mot.pbg)
+    fs, rs = scanmotif(seq, mot.pbg, motifpbg_rc(mot))
     
     ## neg ecdf
     nec = ecdf([-fs ; -rs])
     
-    fsi = findall(fs .> thr)
-    rsi = findall(rs .> thr)
-    
     res = DataFrame(Motif=String[], start=Int[], stop=Int[], score=Float64[], strand=String[], emp_p=Float64[], prmax=Float64[], seq=Vector{T}())
     
-    maxscore = sum(maximum(mot.pbg, dims=1))
+    maxscore = motifmaxscore(mot)
     
     n = size(mot.pbg, 2)
-    for f in fsi
-       push!(res, (mot.name, f, f + n - 1, fs[f], "+", nec(-fs[f]), fs[f]/maxscore, seq[f:f+n-1]))
+     @inbounds for f in eachindex(fs)
+         if fs[f] > thr
+             push!(res, (mot.name, f, f + n - 1, fs[f], "+", nec(-fs[f]), fs[f]/maxscore, seq[f:f+n-1]))
+         end
     end
     
-    for r in rsi
-       push!(res, (mot.name, r, r + n - 1, rs[r], "-", nec(-rs[r]), rs[r]/maxscore, reverse_complement(seq[r:r+n-1])))
+     @inbounds for r in eachindex(rs)
+         if rs[r] > thr
+             push!(res, (mot.name, r, r + n - 1, rs[r], "-", nec(-rs[r]), rs[r]/maxscore, reverse_complement(seq[r:r+n-1])))
+         end
     end
     res
 end

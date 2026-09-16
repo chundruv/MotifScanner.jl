@@ -11,7 +11,7 @@ using ProgressMeter
 
 
 
-export loadmeme, loadmemelibrary, loadhomer, scanmotif, scanmotstats, consensus, plotseq, plotletter!, seqlogo!, seqlogo, loadrefseqs, motifscanall, loadtransfac
+export loadmeme, loadmemelibrary, loadhomer, scanmotif, scanmotstats, consensus, plotseq, plotletter!, seqlogo!, seqlogo, loadrefseqs, loadvcf, motifscanall, loadtransfac
 
 include("loadmeme.jl")
 include("scanning.jl")

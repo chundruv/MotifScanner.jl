@@ -160,7 +160,7 @@ function motifscanall(seqtable, motifs; minprmax=-Inf, mindeltapr=0.0)
 
     nrows = nrow(seqtable)
     dfs = Vector{DataFrame}(undef, nrows)
-    has_id = :ID in names(seqtable)
+    has_id = :ID in propertynames(seqtable)
 
     Threads.@threads for idx in 1:nrows
         row = seqtable[idx, :]

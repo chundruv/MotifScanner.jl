@@ -54,7 +54,9 @@ function parse_vcf_chunk!(io, chunk_size::Int, split_multiallelic::Bool, drop_sy
 end
 
 function write_scores!(io, df::DataFrame)
+    has_id = :ID in names(df)
     for row in eachrow(df)
+        row_id = has_id ? row.ID : ""
         fields = [
             row.MotifName,
             row.MotifID,
@@ -80,7 +82,7 @@ function write_scores!(io, df::DataFrame)
             string(row.PR_RefAlt),
             string(row.RefSeq),
             string(row.AltSeq),
-            row.ID,
+            row_id,
         ]
         write(io, join(fields, '\t'))
         write(io, '\n')
@@ -131,6 +133,9 @@ function main(args)
             seqtable[!, :ID] = vartable.ID
 
             scores = motifscanall(seqtable, motifs; minprmax=minprmax, mindeltapr=mindeltapr)
+            if :ID ∉ names(scores) && nrow(scores) > 0
+                scores[!, :ID] = repeat(vartable.ID, inner=1)
+            end
             total_output_rows += nrow(scores)
 
             write_scores!(out, scores)

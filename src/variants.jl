@@ -1,5 +1,6 @@
 
 
+
 ### variant table
 # chrom start stop id type = {var, ins, del} index refseq altseq
 
@@ -157,13 +158,16 @@ end
 
 function motifscanall(seqtable, motifs; minprmax=-Inf, mindeltapr=0.0)
 
-    dfs = Vector{DataFrame}(undef, nrow(seqtable))
-    i = 1
-    for row in eachrow(seqtable)
+    nrows = nrow(seqtable)
+    dfs = Vector{DataFrame}(undef, nrows)
+
+    Threads.@threads for idx in 1:nrows
+        row = seqtable[idx, :]
         df = scanmots(row.refseq, row.altseq, row.refind, row.altind, motifs; minprmax=minprmax, mindeltapr=mindeltapr)
-        df[!, :ID] .= row.ID
-        dfs[i] = df
-        i += 1
+        if nrow(df) > 0
+            df[!, :ID] .= row.ID
+        end
+        dfs[idx] = df
     end
     vcat(dfs...)
 end

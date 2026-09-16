@@ -178,7 +178,86 @@ function motifscanseq(seq, ind, motif)
     n = size(motif.pwm, 2)
     start = max(first(ind) - n + 1, 1)
     stop  = min(last(ind)  + n - 1, length(seq))
-    seq[start:stop], start
+    start:stop
+end
+
+function scansummax(seq, motif, ind::UnitRange{Int}, thr=0)
+    maxscore = motifmaxscore(motif)
+    thrscore = thr * maxscore
+    rot = motifpbg_rc(motif)
+    pbg = motif.pbg
+    m = size(pbg, 2)
+
+    offset = first(ind)
+    lastpos = last(ind) - m + 1
+    @assert lastpos >= offset
+
+    totalmotifs = 0
+    totalmax = 0
+    sumscore_num = 0.0
+
+    fm = -Inf
+    fi = offset
+    rm = -Inf
+    ri = offset
+
+    @inbounds for pos in offset:lastpos
+        f = 0.0
+        r = 0.0
+        for j in 1:m
+            base = seq[pos + j - 1]
+            if base == DNA_A
+                f += pbg[1, j]
+                r += rot[1, j]
+            elseif base == DNA_C
+                f += pbg[2, j]
+                r += rot[2, j]
+            elseif base == DNA_G
+                f += pbg[3, j]
+                r += rot[3, j]
+            elseif base == DNA_T
+                f += pbg[4, j]
+                r += rot[4, j]
+            end
+        end
+
+        if f > thrscore
+            sumscore_num += f
+            totalmotifs += 1
+        end
+        if r > thrscore
+            sumscore_num += r
+            totalmotifs += 1
+        end
+
+        if f == maxscore
+            totalmax += 1
+        end
+        if r == maxscore
+            totalmax += 1
+        end
+
+        if f > fm
+            fm = f
+            fi = pos
+        end
+        if r > rm
+            rm = r
+            ri = pos
+        end
+    end
+
+    sumscore = sumscore_num / maxscore
+
+    if fm > rm
+        local_start = fi - offset + 1
+        local_stop = local_start + m - 1
+        return fm, local_start, local_stop, "+", sumscore, totalmotifs, totalmax
+    else
+        local_start = ri - offset + 1
+        local_stop = local_start + m - 1
+        return rm, local_start, local_stop, "-", sumscore, totalmotifs, totalmax
+    end
 end
 
 
@@ -212,13 +291,13 @@ function scanmots(refseq, altseq, refind, altind, motifs; minprmax=-Inf, mindelt
     alt_seqs = Vector{LongDNA{4}}(undef, nm)
 
     k = 0
-    @showprogress for m in motifs
+    for m in motifs
         maxscore = motifmaxscore(m)
-        refmseq, refstart = MotifScanner.motifscanseq(refseq, refind, m)
-        altmseq, altstart = MotifScanner.motifscanseq(altseq, altind, m)
+        refscanind = MotifScanner.motifscanseq(refseq, refind, m)
+        altscanind = MotifScanner.motifscanseq(altseq, altind, m)
         
-        refres = scansummax(refmseq, m)
-        altres = scansummax(altmseq, m)
+        refres = scansummax(refseq, m, refscanind)
+        altres = scansummax(altseq, m, altscanind)
 
         ref_prmax = first(refres)/maxscore
         alt_prmax = first(altres)/maxscore
@@ -234,8 +313,8 @@ function scanmots(refseq, altseq, refind, altind, motifs; minprmax=-Inf, mindelt
 
         motif_names[k] = m.name
         motif_ids[k] = m.id
-        ref_mot_seq_starts[k] = refstart
-        alt_mot_seq_starts[k] = altstart
+        ref_mot_seq_starts[k] = first(refscanind)
+        alt_mot_seq_starts[k] = first(altscanind)
 
         ref_max_scores[k] = refres[1]
         ref_starts[k] = refres[2]
@@ -257,8 +336,8 @@ function scanmots(refseq, altseq, refind, altind, motifs; minprmax=-Inf, mindelt
         alt_prmaxs[k] = alt_prmax
         lr_refalts[k] = lr_refalt
         pr_refalts[k] = pr_refalt
-        ref_seqs[k] = refmseq
-        alt_seqs[k] = altmseq
+        ref_seqs[k] = refseq[refscanind]
+        alt_seqs[k] = altseq[altscanind]
     end
 
     resize!(motif_names, k)

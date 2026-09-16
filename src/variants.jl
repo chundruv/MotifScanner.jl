@@ -160,12 +160,13 @@ function motifscanall(seqtable, motifs; minprmax=-Inf, mindeltapr=0.0)
 
     nrows = nrow(seqtable)
     dfs = Vector{DataFrame}(undef, nrows)
+    has_id = :ID in names(seqtable)
 
     Threads.@threads for idx in 1:nrows
         row = seqtable[idx, :]
         df = scanmots(row.refseq, row.altseq, row.refind, row.altind, motifs; minprmax=minprmax, mindeltapr=mindeltapr)
-        if nrow(df) > 0
-            df[!, :ID] .= row.ID
+        if has_id
+            df[!, :ID] = fill(row.ID, nrow(df))
         end
         dfs[idx] = df
     end

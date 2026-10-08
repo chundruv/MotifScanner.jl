@@ -128,8 +128,9 @@ function loadrefseqs(chroms, starts, stops, refs, alts, file, mml=40)
     altinds = UnitRange{Int}[]
     refseqs = LongSequence{DNAAlphabet{4}}[]
     altseqs = LongSequence{DNAAlphabet{4}}[]
+    refmatch = Bool[]
     for (c, s, e, r, a) in zip(chroms, starts, stops, refs, alts)
-        start = s - mml
+        start = max(s - mml, 1)
         stop  = e + mml
         # refseq = FASTA.extract(reader, DNAAlphabet{4}(), c, start:stop) 
         refseq = FASTA.extract(reader, c, start:stop) |> LongDNA{4}
@@ -142,6 +143,8 @@ function loadrefseqs(chroms, starts, stops, refs, alts, file, mml=40)
         altseq = refseq[leftind]*a*refseq[rightind]
     
         @assert a == altseq[altind]
+        # REF must match the reference genome (build / normalisation check)
+        push!(refmatch, refseq[refind] == r)
 
         push!(seqstarts, start)
         push!(seqstops, stop)
@@ -152,26 +155,50 @@ function loadrefseqs(chroms, starts, stops, refs, alts, file, mml=40)
     end
 
     close(reader)
-    DataFrame(seqstart=seqstarts, seqstop=seqstops, refind=refinds, altind=altinds, refseq=refseqs, altseq=altseqs)
+    DataFrame(seqstart=seqstarts, seqstop=seqstops, refind=refinds, altind=altinds, refseq=refseqs, altseq=altseqs, RefMatch=refmatch)
 end
 
 
-function motifscanall(seqtable, motifs; minprmax=-Inf, mindeltapr=0.0)
+"""
+    motifscanall(seqtable, motifs; pthresh=1e-4, maxpval=1.0, mindlog10p=0.0,
+                 minprmax=-Inf, mindeltapr=0.0, background=background_human_zero_markov(),
+                 resolution=0.01)
 
+Score every variant in `seqtable` (from `loadrefseqs`) against every motif. Motifs are
+calibrated once here if they are not already (see `calibrate`). Rows with
+`RefMatch == false` (REF does not match the FASTA) are skipped. A row is written when
+min(RefPval, AltPval) <= `maxpval`, |Log10P_RefAlt| >= `mindlog10p`, and the legacy
+`minprmax`/`mindeltapr` filters pass. Use `maxpval=pthresh` to keep only rows where at
+least one allele has a calibrated site.
+"""
+function motifscanall(seqtable, motifs; pthresh=1e-4, maxpval=1.0, mindlog10p=0.0,
+                      minprmax=-Inf, mindeltapr=0.0,
+                      background=background_human_zero_markov(), resolution=0.01)
+
+    cmotifs = [iscalibrated(m) && m.pthresh == pthresh ? m :
+               calibrate(m; background=background, resolution=resolution, pthresh=pthresh)
+               for m in motifs]
     nrows = nrow(seqtable)
     dfs = Vector{DataFrame}(undef, nrows)
     has_id = :ID in propertynames(seqtable)
+    has_match = :RefMatch in propertynames(seqtable)
 
     Threads.@threads for idx in 1:nrows
         row = seqtable[idx, :]
-        df = scanmots(row.refseq, row.altseq, row.refind, row.altind, motifs; minprmax=minprmax, mindeltapr=mindeltapr)
-        if has_id
-            df[!, :ID] = fill(row.ID, nrow(df))
+        if has_match && !row.RefMatch
+            dfs[idx] = scanmots(row.refseq, row.altseq, row.refind, row.altind, cmotifs[1:0])
+        else
+            dfs[idx] = scanmots(row.refseq, row.altseq, row.refind, row.altind, cmotifs;
+                                maxpval=maxpval, mindlog10p=mindlog10p,
+                                minprmax=minprmax, mindeltapr=mindeltapr)
         end
-        dfs[idx] = df
+        if has_id
+            dfs[idx][!, :ID] = fill(row.ID, nrow(dfs[idx]))
+        end
     end
     vcat(dfs...)
 end
+
 ## for variants only
 
 function motifscanseq(seq, ind, motif)
@@ -181,6 +208,158 @@ function motifscanseq(seq, ind, motif)
     start:stop
 end
 
+"""
+    scanwindow(seq, motif, ind) -> NamedTuple
+
+Scan the placements that start in `first(ind):(last(ind) - w + 1)` on both strands,
+using a calibrated motif. Placements containing a non-ACGT base are excluded.
+Returns the best placement (same tie rule as `scansummax`: + strand wins only if strictly
+better), its integer score, the number of valid placements, and the number and score sum
+of placements at or above the calibrated threshold (`motif.thrint`).
+"""
+function scanwindow(seq, motif, ind::UnitRange{Int})
+    pbg = motif.pbg; rot = motifpbg_rc(motif)
+    ip = motif.ipbg; irc = motif.ipbg_rc
+    thrint = motif.thrint
+    maxscore = motifmaxscore(motif)
+    m = size(pbg, 2)
+    offset = first(ind)
+    lastpos = last(ind) - m + 1
+
+    nvalid = 0; nsig = 0; nmax = 0; sumsig = 0.0
+    fm = -Inf; fpos = 0; fint = typemin(Int)
+    rm = -Inf; rpos = 0; rint = typemin(Int)
+
+    @inbounds for pos in offset:lastpos
+        f = 0.0; r = 0.0; fi = 0; ri = 0; valid = true
+        for j in 1:m
+            b = baseidx(seq[pos + j - 1])
+            if b == 0
+                valid = false
+                break
+            end
+            f += pbg[b, j]; r += rot[b, j]
+            fi += ip[b, j]; ri += irc[b, j]
+        end
+        valid || continue
+        nvalid += 1
+        if fi >= thrint
+            nsig += 1; sumsig += f
+        end
+        if ri >= thrint
+            nsig += 1; sumsig += r
+        end
+        f == maxscore && (nmax += 1)
+        r == maxscore && (nmax += 1)
+        if f > fm
+            fm = f; fpos = pos; fint = fi
+        end
+        if r > rm
+            rm = r; rpos = pos; rint = ri
+        end
+    end
+
+    if nvalid == 0
+        return (score=-Inf, intscore=typemin(Int), start=0, stop=0, strand=".",
+                sumscore=0.0, nsig=0, nmax=0, nvalid=0)
+    end
+    if fm > rm
+        s, p, si, strand = fm, fpos, fint, "+"
+    else
+        s, p, si, strand = rm, rpos, rint, "-"
+    end
+    local_start = p - offset + 1
+    (score=s, intscore=si, start=local_start, stop=local_start + m - 1, strand=strand,
+     sumscore=sumsig / maxscore, nsig=nsig, nmax=nmax, nvalid=nvalid)
+end
+
+callclass(refhit::Bool, althit::Bool) =
+    refhit ? (althit ? "retained" : "loss") : (althit ? "gain" : "none")
+
+"""
+    scanmots(refseq, altseq, refind, altind, motifs; maxpval=1.0, mindlog10p=0.0,
+             minprmax=-Inf, mindeltapr=0.0)
+
+Score one variant against calibrated motifs (see `calibrate`). Columns:
+
+- Legacy: MotifName, MotifID, RefMotSeqStart, AltMotSeqStart, Ref/Alt MaxScore, Start,
+  Stop, Strand, SumScore, TotalMotifs, TotalMax, RefPrMax, AltPrMax, LR_RefAlt,
+  PR_RefAlt, RefSeq, AltSeq.
+  `TotalMotifs`/`SumScore` now count placements at the calibrated threshold
+  (p <= pthresh), not every placement with score > 0.
+- Calibrated: RefPval/AltPval (single-strand, per-placement null p of the best placement),
+  RefProbNorm/AltProbNorm (= 1 - p, motifDiff "probNorm"-style),
+  ProbNorm_AltRef (alt - ref; negative = loss, motifDiff sign),
+  Log10P_RefAlt (log10 AltPval - log10 RefPval; positive = loss),
+  Call (loss | gain | retained | none at `pthresh`), ThresholdScore, PThresh,
+  MotifLen, RefLen, AltLen, RefNValid, AltNValid.
+
+Indel note: the longer allele is scanned over more placements, so its maximum is
+biased upwards. Compare loss/gain rates only within variant classes / indel lengths.
+"""
+function scanmots(refseq, altseq, refind, altind, motifs; maxpval=1.0, mindlog10p=0.0,
+                  minprmax=-Inf, mindeltapr=0.0)
+
+    out = (MotifName=String[], MotifID=String[], RefMotSeqStart=Int[], AltMotSeqStart=Int[],
+           RefMaxScore=Float64[], RefStart=Int[], RefStop=Int[], RefStrand=String[],
+           RefSumScore=Float64[], RefTotalMotifs=Int[], RefTotalMax=Int[],
+           AltMaxScore=Float64[], AltStart=Int[], AltStop=Int[], AltStrand=String[],
+           AltSumScore=Float64[], AltTotalMotifs=Int[], AltTotalMax=Int[],
+           RefPrMax=Float64[], AltPrMax=Float64[], LR_RefAlt=Float64[], PR_RefAlt=Float64[],
+           RefPval=Float64[], AltPval=Float64[], RefProbNorm=Float64[], AltProbNorm=Float64[],
+           ProbNorm_AltRef=Float64[], Log10P_RefAlt=Float64[], Call=String[],
+           ThresholdScore=Float64[], PThresh=Float64[], MotifLen=Int[], RefLen=Int[],
+           AltLen=Int[], RefNValid=Int[], AltNValid=Int[],
+           RefSeq=LongDNA{4}[], AltSeq=LongDNA{4}[])
+
+    for m0 in motifs
+        # back-compat: uncalibrated motifs are calibrated here with defaults (slow per call;
+        # motifscanall / calibrate(motifs) do this once up front)
+        m = iscalibrated(m0) ? m0 : calibrate(m0)
+        maxscore = motifmaxscore(m)
+        refscanind = motifscanseq(refseq, refind, m)
+        altscanind = motifscanseq(altseq, altind, m)
+
+        rr = scanwindow(refseq, m, refscanind)
+        ar = scanwindow(altseq, m, altscanind)
+
+        ref_prmax = rr.score / maxscore
+        alt_prmax = ar.score / maxscore
+        pr_refalt = ref_prmax - alt_prmax
+        refp = motifpval(m, rr.intscore)
+        altp = motifpval(m, ar.intscore)
+        dlog10p = log10(altp) - log10(refp)
+
+        if min(refp, altp) > maxpval || abs(dlog10p) < mindlog10p ||
+           max(ref_prmax, alt_prmax) < minprmax || !(abs(pr_refalt) >= mindeltapr)
+            continue
+        end
+
+        push!(out.MotifName, m.name); push!(out.MotifID, m.id)
+        push!(out.RefMotSeqStart, first(refscanind)); push!(out.AltMotSeqStart, first(altscanind))
+        push!(out.RefMaxScore, rr.score); push!(out.RefStart, rr.start); push!(out.RefStop, rr.stop)
+        push!(out.RefStrand, rr.strand); push!(out.RefSumScore, rr.sumscore)
+        push!(out.RefTotalMotifs, rr.nsig); push!(out.RefTotalMax, rr.nmax)
+        push!(out.AltMaxScore, ar.score); push!(out.AltStart, ar.start); push!(out.AltStop, ar.stop)
+        push!(out.AltStrand, ar.strand); push!(out.AltSumScore, ar.sumscore)
+        push!(out.AltTotalMotifs, ar.nsig); push!(out.AltTotalMax, ar.nmax)
+        push!(out.RefPrMax, ref_prmax); push!(out.AltPrMax, alt_prmax)
+        push!(out.LR_RefAlt, rr.score - ar.score); push!(out.PR_RefAlt, pr_refalt)
+        push!(out.RefPval, refp); push!(out.AltPval, altp)
+        push!(out.RefProbNorm, 1 - refp); push!(out.AltProbNorm, 1 - altp)
+        push!(out.ProbNorm_AltRef, refp - altp)
+        push!(out.Log10P_RefAlt, dlog10p)
+        push!(out.Call, callclass(refp <= m.pthresh, altp <= m.pthresh))
+        push!(out.ThresholdScore, m.thrscore); push!(out.PThresh, m.pthresh)
+        push!(out.MotifLen, size(m.pbg, 2)); push!(out.RefLen, length(refind)); push!(out.AltLen, length(altind))
+        push!(out.RefNValid, rr.nvalid); push!(out.AltNValid, ar.nvalid)
+        push!(out.RefSeq, refseq[refscanind]); push!(out.AltSeq, altseq[altscanind])
+    end
+    DataFrame(out)
+end
+
+
+### legacy scorer (fraction-of-max threshold); kept for back-compatibility
 function scansummax(seq, motif, ind::UnitRange{Int}, thr=0)
     maxscore = motifmaxscore(motif)
     thrscore = thr * maxscore
@@ -258,138 +437,4 @@ function scansummax(seq, motif, ind::UnitRange{Int}, thr=0)
         local_stop = local_start + m - 1
         return rm, local_start, local_stop, "-", sumscore, totalmotifs, totalmax
     end
-end
-
-
-
-function scanmots(refseq, altseq, refind, altind, motifs; minprmax=-Inf, mindeltapr=0.0)
-
-    nm = length(motifs)
-    motif_names = Vector{String}(undef, nm)
-    motif_ids = Vector{String}(undef, nm)
-    ref_mot_seq_starts = Vector{Int}(undef, nm)
-    alt_mot_seq_starts = Vector{Int}(undef, nm)
-    ref_max_scores = Vector{Float64}(undef, nm)
-    ref_starts = Vector{Int}(undef, nm)
-    ref_stops = Vector{Int}(undef, nm)
-    ref_strands = Vector{String}(undef, nm)
-    ref_sum_scores = Vector{Float64}(undef, nm)
-    ref_total_motifs = Vector{Int}(undef, nm)
-    ref_total_max = Vector{Int}(undef, nm)
-    alt_max_scores = Vector{Float64}(undef, nm)
-    alt_starts = Vector{Int}(undef, nm)
-    alt_stops = Vector{Int}(undef, nm)
-    alt_strands = Vector{String}(undef, nm)
-    alt_sum_scores = Vector{Float64}(undef, nm)
-    alt_total_motifs = Vector{Int}(undef, nm)
-    alt_total_max = Vector{Int}(undef, nm)
-    ref_prmaxs = Vector{Float64}(undef, nm)
-    alt_prmaxs = Vector{Float64}(undef, nm)
-    lr_refalts = Vector{Float64}(undef, nm)
-    pr_refalts = Vector{Float64}(undef, nm)
-    ref_seqs = Vector{LongDNA{4}}(undef, nm)
-    alt_seqs = Vector{LongDNA{4}}(undef, nm)
-
-    k = 0
-    for m in motifs
-        maxscore = motifmaxscore(m)
-        refscanind = MotifScanner.motifscanseq(refseq, refind, m)
-        altscanind = MotifScanner.motifscanseq(altseq, altind, m)
-        
-        refres = scansummax(refseq, m, refscanind)
-        altres = scansummax(altseq, m, altscanind)
-
-        ref_prmax = first(refres)/maxscore
-        alt_prmax = first(altres)/maxscore
-        lr_refalt = first(refres) - first(altres)
-        pr_refalt = ref_prmax - alt_prmax
-
-        # Keep motifs where normalized max score and normalized delta pass filters.
-        if max(ref_prmax, alt_prmax) < minprmax || abs(pr_refalt) < mindeltapr
-            continue
-        end
-
-        k += 1
-
-        motif_names[k] = m.name
-        motif_ids[k] = m.id
-        ref_mot_seq_starts[k] = first(refscanind)
-        alt_mot_seq_starts[k] = first(altscanind)
-
-        ref_max_scores[k] = refres[1]
-        ref_starts[k] = refres[2]
-        ref_stops[k] = refres[3]
-        ref_strands[k] = refres[4]
-        ref_sum_scores[k] = refres[5]
-        ref_total_motifs[k] = refres[6]
-        ref_total_max[k] = refres[7]
-
-        alt_max_scores[k] = altres[1]
-        alt_starts[k] = altres[2]
-        alt_stops[k] = altres[3]
-        alt_strands[k] = altres[4]
-        alt_sum_scores[k] = altres[5]
-        alt_total_motifs[k] = altres[6]
-        alt_total_max[k] = altres[7]
-
-        ref_prmaxs[k] = ref_prmax
-        alt_prmaxs[k] = alt_prmax
-        lr_refalts[k] = lr_refalt
-        pr_refalts[k] = pr_refalt
-        ref_seqs[k] = refseq[refscanind]
-        alt_seqs[k] = altseq[altscanind]
-    end
-
-    resize!(motif_names, k)
-    resize!(motif_ids, k)
-    resize!(ref_mot_seq_starts, k)
-    resize!(alt_mot_seq_starts, k)
-    resize!(ref_max_scores, k)
-    resize!(ref_starts, k)
-    resize!(ref_stops, k)
-    resize!(ref_strands, k)
-    resize!(ref_sum_scores, k)
-    resize!(ref_total_motifs, k)
-    resize!(ref_total_max, k)
-    resize!(alt_max_scores, k)
-    resize!(alt_starts, k)
-    resize!(alt_stops, k)
-    resize!(alt_strands, k)
-    resize!(alt_sum_scores, k)
-    resize!(alt_total_motifs, k)
-    resize!(alt_total_max, k)
-    resize!(ref_prmaxs, k)
-    resize!(alt_prmaxs, k)
-    resize!(lr_refalts, k)
-    resize!(pr_refalts, k)
-    resize!(ref_seqs, k)
-    resize!(alt_seqs, k)
-
-    DataFrame(
-        MotifName=motif_names,
-        MotifID=motif_ids,
-        RefMotSeqStart=ref_mot_seq_starts,
-        AltMotSeqStart=alt_mot_seq_starts,
-        RefMaxScore=ref_max_scores,
-        RefStart=ref_starts,
-        RefStop=ref_stops,
-        RefStrand=ref_strands,
-        RefSumScore=ref_sum_scores,
-        RefTotalMotifs=ref_total_motifs,
-        RefTotalMax=ref_total_max,
-        AltMaxScore=alt_max_scores,
-        AltStart=alt_starts,
-        AltStop=alt_stops,
-        AltStrand=alt_strands,
-        AltSumScore=alt_sum_scores,
-        AltTotalMotifs=alt_total_motifs,
-        AltTotalMax=alt_total_max,
-        RefPrMax=ref_prmaxs,
-        AltPrMax=alt_prmaxs,
-        LR_RefAlt=lr_refalts,
-        PR_RefAlt=pr_refalts,
-        RefSeq=ref_seqs,
-        AltSeq=alt_seqs,
-    )
-    
 end

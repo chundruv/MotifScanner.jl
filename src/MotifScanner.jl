@@ -12,9 +12,11 @@ using ProgressMeter
 
 
 export loadmeme, loadmemelibrary, loadhomer, scanmotif, scanmotstats, consensus, plotseq, plotletter!, seqlogo!, seqlogo, loadrefseqs, loadvcf, motifscanall, loadtransfac
+export calibrate, motifpval, motifcalibration_table, scanwindow
 
 include("loadmeme.jl")
 include("scanning.jl")
+include("calibration.jl")
 # include("plotseqlogo.jl")
 # include("seqlogodata.jl")
 
